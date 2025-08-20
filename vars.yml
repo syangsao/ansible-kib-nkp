@@ -1,0 +1,18 @@
+vsphere:
+  server: "vcenter.lab.local"
+  username: "administrator@vsphere.local"
+  password: "SuperSecret!"
+  datacenter: "DC1"
+  cluster: "Workload-Cluster"
+  datastore: "vsanDatastore"
+  network: "VM Network"
+  resource_pool: ""
+  folder: "os-qualification-templates"
+
+# If you already created the base OS template by other means, skip this:
+skip_base_os_build: false
+base_os_name: "d2iq-base-RockyLinux-9.1"
+
+# Prefer the containerized KIB by default:
+kib_use_container: true
+kib_container_image: "quay.io/d2iq/konvoy-image:latest"
