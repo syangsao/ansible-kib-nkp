@@ -1,0 +1,182 @@
+---
+- name: Build vSphere image for NKP with Rocky Linux 9.1 via Konvoy Image Builder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # ---- vSphere connection (used by both base OS build and KIB) ----
+    vsphere_server: "{{ lookup('env','VSPHERE_SERVER') | default(vsphere.server, true) }}"
+    vsphere_username: "{{ lookup('env','VSPHERE_USERNAME') | default(vsphere.username, true) }}"
+    vsphere_password: "{{ lookup('env','VSPHERE_PASSWORD') | default(vsphere.password, true) }}"
+
+    vsphere:
+      server: "vcenter.example.com"
+      username: "administrator@vsphere.local"
+      password: "REDACTED"
+      datacenter: "DC1"
+      cluster: "Cluster1"
+      datastore: "Datastore1"
+      network: "VM Network"
+      resource_pool: ""     # optional
+      folder: "os-qualification-templates"
+
+    # ---- Base OS template (optional step) ----
+    base_template_repo: "https://github.com/mesosphere/vsphere-base-template.git"
+    base_template_branch: "main"
+    base_os_name: "d2iq-base-RockyLinux-9.1"
+    # If you already have the base OS template in vCenter, set skip_base_os_build: true
+    skip_base_os_build: false
+
+    # For vsphere-base-template make:
+    # You can override ROCKY_VERSION if you want a specific minor; the repo supports 9.1.
+    rocky_version: "9.1"
+
+    # ---- Konvoy Image Builder (KIB) invocation ----
+    kib_use_container: true
+    kib_container_image: "quay.io/d2iq/konvoy-image:latest"
+    kib_binary_path: "/usr/local/bin/konvoy-image"   # used if kib_use_container == false
+
+    # Output image details (the DKP/NKP-ready vSphere template)
+    kib_build_name: "rocky-91"
+    kib_manifest_dir: "./artifacts"
+    image_yaml_path: "./image.yaml"
+
+  tasks:
+    - name: Ensure required packages are present
+      package:
+        name:
+          - git
+          - make
+          - python3
+          - unzip
+          - tar
+          - podman
+        state: present
+      become: true
+
+    - name: Create working dirs
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - ./work
+        - "{{ kib_manifest_dir }}"
+
+    # -------------------- (Optional) Build the Base OS template --------------------
+    - name: Clone vsphere-base-template (D2iQ) repo
+      when: not skip_base_os_build
+      git:
+        repo: "{{ base_template_repo }}"
+        dest: "./work/vsphere-base-template"
+        version: "{{ base_template_branch }}"
+
+    - name: Build Rocky Linux {{ rocky_version }} base OS template in vSphere (this uses Packer under the hood)
+      when: not skip_base_os_build
+      args:
+        chdir: "./work/vsphere-base-template"
+      environment:
+        VSPHERE_SERVER: "{{ vsphere_server }}"
+        VSPHERE_USERNAME: "{{ vsphere_username }}"
+        VSPHERE_PASSWORD: "{{ vsphere_password }}"
+        VSPHERE_DATACENTER: "{{ vsphere.datacenter }}"
+        VSPHERE_CLUSTER: "{{ vsphere.cluster }}"
+        VSPHERE_DATASTORE: "{{ vsphere.datastore }}"
+        VSPHERE_NETWORK: "{{ vsphere.network }}"
+        VSPHERE_RESOURCE_POOL: "{{ vsphere.resource_pool | default('') }}"
+        VSPHERE_FOLDER: "{{ vsphere.folder }}"
+        # Optionally pin ROCKY version if needed by the Makefile:
+        ROCKY_VERSION: "{{ rocky_version }}"
+      shell: |
+        set -euo pipefail
+        # The repo supports 'make rocky' to build Rocky variants including 9.1.
+        # Adjust or add variables per repo README if needed.
+        make rocky
+      register: base_os_build
+
+    - name: Note base OS template name for KIB
+      set_fact:
+        base_os_template_name: "{{ base_os_name }}"
+      when: base_os_template_name is not defined
+
+    # -------------------- Prepare image.yaml for KIB (Rocky 9.1) --------------------
+    - name: Render KIB image.yaml (Rocky 9.1)
+      copy:
+        dest: "{{ image_yaml_path }}"
+        mode: "0644"
+        content: |
+          ---
+          download_images: true
+          build_name: "{{ kib_build_name }}"
+          packer_builder_type: "vsphere"
+          guestinfo_datasource_slug: "https://raw.githubusercontent.com/vmware/cloud-init-vmware-guestinfo"
+          guestinfo_datasource_ref: "v1.4.0"
+          guestinfo_datasource_script: "{{'{{'}}guestinfo_datasource_slug{{'}}'}}/{{'{{'}}guestinfo_datasource_ref{{'}}'}}/install.sh"
+          packer:
+            cluster: "{{ vsphere.cluster }}"
+            datacenter: "{{ vsphere.datacenter }}"
+            datastore: "{{ vsphere.datastore }}"
+            folder: "{{ vsphere.folder }}"
+            insecure_connection: "false"
+            network: "{{ vsphere.network }}"
+            resource_pool: "{{ vsphere.resource_pool }}"
+            template: "{{ vsphere.folder }}/{{ base_os_template_name }}"
+            vsphere_guest_os_type: "other4xLinux64Guest"
+            guest_os_type: "rocky9-64"
+            # goss params
+            distribution: "rocky"
+            distribution_version: "9.1"
+          # You can also set SSH auth overrides if your base template requires it:
+          # ssh_username: ""
+          # ssh_password: ""
+          # ssh_private_key_file: ""
+          # ssh_agent_auth: false
+
+    # -------------------- Run Konvoy Image Builder --------------------
+    - name: Run KIB (container) to build the vSphere image
+      when: kib_use_container
+      environment:
+        VSPHERE_SERVER: "{{ vsphere_server }}"
+        VSPHERE_USERNAME: "{{ vsphere_username }}"
+        VSPHERE_PASSWORD: "{{ vsphere_password }}"
+      shell: |
+        set -euo pipefail
+        podman run --rm \
+          -v "$(pwd):/work" \
+          -w /work \
+          -e VSPHERE_SERVER \
+          -e VSPHERE_USERNAME \
+          -e VSPHERE_PASSWORD \
+          "{{ kib_container_image }}" \
+          build vsphere "{{ image_yaml_path }}" --manifest-dir "{{ kib_manifest_dir }}"
+      register: kib_build_container
+
+    - name: Run KIB (local binary) to build the vSphere image
+      when: not kib_use_container
+      environment:
+        VSPHERE_SERVER: "{{ vsphere_server }}"
+        VSPHERE_USERNAME: "{{ vsphere_username }}"
+        VSPHERE_PASSWORD: "{{ vsphere_password }}"
+      shell: |
+        set -euo pipefail
+        "{{ kib_binary_path }}" build vsphere "{{ image_yaml_path }}" --manifest-dir "{{ kib_manifest_dir }}"
+      register: kib_build_binary
+
+    - name: Show resulting KIB manifest(s)
+      shell: |
+        ls -1 {{ kib_manifest_dir }}/*.manifest.json
+      register: manifest_list
+      changed_when: false
+
+    - name: Read artifact_id from last manifest
+      when: manifest_list.stdout_lines | length > 0
+      shell: |
+        set -euo pipefail
+        jq -r '.artifact_id' "$(ls -1 {{ kib_manifest_dir }}/*.manifest.json | tail -n1)"
+      register: artifact_id
+      changed_when: false
+
+    - name: Final image/template name in vSphere
+      debug:
+        msg: >
+          KIB completed. vSphere template name (artifact_id): {{ artifact_id.stdout | default('UNKNOWN') }}.
+          Rename it per your convention, e.g. dkp-<version>-k8s-<version>-rocky, if desired.
