@@ -2,7 +2,7 @@ Here’s a ready-to-run Ansible playbook that uses Konvoy Image Builder (KIB) to
 
 KIB expects a vSphere base OS template to exist, then it builds the final DKP/NKP image from that via an image.yaml. The image.yaml fields and the konvoy-image build vsphere ... flow come straight from the DKP docs, and the Rocky 9.1 variant is officially documented. 
 
-How to run
+**How to run**
 
 Optionally export vSphere creds to avoid plain-text in vars.yml:
 ```
@@ -16,7 +16,9 @@ Run the optional base OS build + KIB (full pipeline):
 ansible-playbook build_nkp_vsphere_image.yml -e @vars.yml
 ```
 
-If you ALREADY have the base OS template in vCenter:
+If you already have the base OS template in vCenter:
 ```
 ansible-playbook build_nkp_vsphere_image.yml -e @vars.yml -e skip_base_os_build=true
 ```
+
+After KIB finishes, it writes a manifest JSON containing artifact_id, which for vSphere is the template name created in your vCenter. That’s the image you’ll reference when creating NKP clusters. (The DKP doc shows this exact behavior and JSON field.) 
