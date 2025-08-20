@@ -1,0 +1,1 @@
+Here’s a ready-to-run Ansible playbook that uses Konvoy Image Builder (KIB) to produce a vSphere image for Nutanix NKP based on Rocky Linux 9.1. It also includes an optional step (tagged base_os) to build the base OS vSphere template first, using D2iQ’s vSphere base-template tooling—useful if you don’t already have a Rocky 9.1 base template in vCenter.
